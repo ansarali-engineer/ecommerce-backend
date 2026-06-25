@@ -1,0 +1,17 @@
+{
+  "watch": ["src"],
+  "ext": "js,json",
+  "ignore": ["src/**/*.test.js", "src/**/__tests__/**"],
+  "exec": "node src/server.js",
+  "restartable": "rs",
+  "env": {
+    "NODE_ENV": "development"
+  },
+  "delay": "1000",
+  "verbose": true,
+  "signal": "SIGTERM",
+  "events": {
+    "restart": "echo '\n[Nodemon] Restarting server due to file changes...'",
+    "crash": "echo '\n[Nodemon] Server crashed - waiting for file changes before restarting...'"
+  }
+}
