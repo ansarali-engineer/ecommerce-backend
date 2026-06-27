@@ -30,9 +30,11 @@ import returnRoutes from './routes/returnRoutes.js';
 
 // Middlewares & Config
 import { notFound, errorHandler } from './middleware/errorMiddleware.js';
+import { withDB } from './middleware/db.js';
 import swaggerSpec from './config/swagger.js';
 
 const app = express();
+app.use(withDB); // ← runs before every route, no need to call connectDB in each controller
 
 // Enable CORS
 app.use(cors({

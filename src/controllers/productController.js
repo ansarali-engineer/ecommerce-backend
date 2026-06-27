@@ -1,12 +1,10 @@
 import Product from '../models/Product.js';
 import Category from '../models/Category.js';
 import Review from '../models/Review.js';
-import connectDB from '../config/db.js';
 
 // Get products with search, filter, sort and pagination
 export const getProducts = async (req, res, next) => {
   try {
-    connectDB()
     const pageSize = parseInt(req.query.pageSize) || 12;
     const page = parseInt(req.query.page) || 1;
 
