@@ -39,7 +39,7 @@ const seedDatabase = async () => {
     // Create Admin User
     const adminUser = await User.create({
       name: 'Admin User',
-      email: 'admin@auraglow.com',
+      email: 'admin@ansartehzeeb.com',
       password: 'AdminPass123',
       role: 'super_admin',
       isVerified: true,
@@ -335,7 +335,7 @@ const seedDatabase = async () => {
     console.log('[Seed] Created warehouse');
 
     console.log('\n[Seed] ✅ Database seeded successfully!');
-    console.log('[Seed] Admin credentials: admin@auraglow.com / AdminPass123');
+    console.log('[Seed] Admin credentials: admin@ansartehzeeb.com / AdminPass123');
     
     process.exit(0);
   } catch (error) {
