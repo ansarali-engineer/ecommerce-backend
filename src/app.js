@@ -27,6 +27,7 @@ import shippingRoutes from './routes/shippingRoutes.js';
 import inventoryRoutes from './routes/inventoryRoutes.js';
 import notificationRoutes from './routes/notificationRoutes.js';
 import returnRoutes from './routes/returnRoutes.js';
+import contactRoutes from './routes/contactRoutes.js';
 
 // Middlewares & Config
 import { notFound, errorHandler } from './middleware/errorMiddleware.js';
@@ -38,7 +39,7 @@ app.use(withDB); // ← runs before every route, no need to call connectDB in ea
 
 // Enable CORS
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173 || https://ecommerce-frontend-sable-zeta.vercel.app',
+  origin: process.env.FRONTEND_URL || 'https://ecommerce-frontend-sable-zeta.vercel.app',
   credentials: true
 }));
 
@@ -110,6 +111,7 @@ app.use('/api/shipping', shippingRoutes);
 app.use('/api/inventory', inventoryRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/returns', returnRoutes);
+app.use('/api/contact', contactRoutes);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
