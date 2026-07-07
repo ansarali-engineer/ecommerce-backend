@@ -187,22 +187,52 @@ export const brandSchema = Joi.object({
 });
 
 export const returnRequestSchema = Joi.object({
-  order: Joi.string().required().pattern(/^[0-9a-fA-F]{24}$/),
+  orderId: Joi.string().required().pattern(/^[0-9a-fA-F]{24}$/),
   returnReason: Joi.string().valid(
     'damaged', 'defective', 'wrong_item', 'not_as_described',
     'no_longer_needed', 'better_price_found', 'late_delivery', 'other'
   ).required(),
-  returnReasonDetails: Joi.string().allow(''),
+  returnReasonDetails: Joi.string().max(2000).allow(''),
   items: Joi.array().items(
     Joi.object({
       product: Joi.string().required().pattern(/^[0-9a-fA-F]{24}$/),
       quantity: Joi.number().required().integer().min(1),
-      reason: Joi.string()
+      reason: Joi.string().allow('')
     })
   ).min(1).required(),
   refundType: Joi.string().valid('original_payment', 'store_credit', 'exchange').default('original_payment'),
-  customerNotes: Joi.string().allow(''),
-  photos: Joi.array().items(Joi.string())
+  customerNotes: Joi.string().max(2000).allow(''),
+  photos: Joi.array().items(
+    Joi.string().max(700000).custom((value, helpers) => {
+      const isUrl = /^https?:\/\//i.test(value);
+      const isDataUrl = /^data:image\/(jpeg|jpg|png|webp|gif);base64,/.test(value);
+      if (!isUrl && !isDataUrl) {
+        return helpers.error('any.invalid');
+      }
+      return value;
+    }, 'image url or data uri')
+  ).max(5)
+});
+
+export const returnActionSchema = Joi.object({
+  adminNotes: Joi.string().max(2000).allow(''),
+  customerFacingNote: Joi.string().max(2000).allow(''),
+  internalNotes: Joi.string().max(2000).allow(''),
+  returnShippingMethod: Joi.string().allow(''),
+  returnShippingCost: Joi.number().min(0),
+  returnShippingPaidBy: Joi.string().valid('customer', 'merchant')
+});
+
+export const processRefundSchema = Joi.object({
+  refundAmount: Joi.number().min(0),
+  internalNotes: Joi.string().max(2000).allow(''),
+  customerFacingNote: Joi.string().max(2000).allow(''),
+  restoreInventory: Joi.boolean().default(true)
+});
+
+export const returnInfoRequestSchema = Joi.object({
+  customerFacingNote: Joi.string().required().min(10).max(2000),
+  internalNotes: Joi.string().max(2000).allow('')
 });
 
 export const shippingZoneSchema = Joi.object({

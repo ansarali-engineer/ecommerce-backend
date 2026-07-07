@@ -23,30 +23,30 @@
         <div class='clearfix'>
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">0% </span>
+                <span class="strong">7.29% </span>
                 <span class="quiet">Statements</span>
-                <span class='fraction'>0/96</span>
+                <span class='fraction'>7/96</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">0% </span>
+                <span class="strong">4.08% </span>
                 <span class="quiet">Branches</span>
-                <span class='fraction'>0/49</span>
+                <span class='fraction'>2/49</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">0% </span>
+                <span class="strong">8.33% </span>
                 <span class="quiet">Functions</span>
-                <span class='fraction'>0/12</span>
+                <span class='fraction'>1/12</span>
             </div>
         
             
             <div class='fl pad1y space-right2'>
-                <span class="strong">0% </span>
+                <span class="strong">7.44% </span>
                 <span class="quiet">Lines</span>
-                <span class='fraction'>0/94</span>
+                <span class='fraction'>7/94</span>
             </div>
         
             
@@ -606,18 +606,18 @@
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-yes">2x</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-yes">2x</span>
 <span class="cline-any cline-no">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-yes">2x</span>
+<span class="cline-any cline-yes">2x</span>
+<span class="cline-any cline-yes">2x</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-neutral">&nbsp;</span>
+<span class="cline-any cline-yes">2x</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -632,7 +632,7 @@
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
-<span class="cline-any cline-no">&nbsp;</span>
+<span class="cline-any cline-yes">2x</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
 <span class="cline-any cline-neutral">&nbsp;</span>
@@ -1015,19 +1015,19 @@ class InventoryService {
   /**
    * Add stock (purchase, return, etc.)
    */
-<span class="fstat-no" title="function not covered" >  as</span>ync addStock(productId, quantity, type, options = <span class="branch-0 cbranch-no" title="branch not covered" >{})</span> {
-    const product = <span class="cstat-no" title="statement not covered" >await Product.findById(productId);</span>
+  async addStock(productId, quantity, type, options = <span class="branch-0 cbranch-no" title="branch not covered" >{})</span> {
+    const product = await Product.findById(productId);
     
-<span class="cstat-no" title="statement not covered" >    if (!product) {</span>
+    <span class="missing-if-branch" title="if path not taken" >I</span>if (!product) {
 <span class="cstat-no" title="statement not covered" >      throw new Error('Product not found');</span>
     }
 &nbsp;
-    const previousStock = <span class="cstat-no" title="statement not covered" >product.inventory;</span>
-<span class="cstat-no" title="statement not covered" >    product.inventory += quantity;</span>
-<span class="cstat-no" title="statement not covered" >    await product.save();</span>
+    const previousStock = product.inventory;
+    product.inventory += quantity;
+    await product.save();
 &nbsp;
     // Create stock movement
-    const movement = <span class="cstat-no" title="statement not covered" >await StockMovement.create({</span>
+    const movement = await StockMovement.create({
       product: product._id,
       type: type, // 'purchase', 'return', 'adjustment', etc.
       quantity: quantity,
@@ -1038,11 +1038,11 @@ class InventoryService {
       performedBy: options.userId,
       reason: options.reason,
       unitCost: options.unitCost,
-      totalValue: options.unitCost ? options.unitCost * quantity : 0,
+      totalValue: options.unitCost ? <span class="branch-0 cbranch-no" title="branch not covered" >options.unitCost * quantity </span>: 0,
       warehouse: options.warehouseId
     });
 &nbsp;
-<span class="cstat-no" title="statement not covered" >    return { product, movement };</span>
+    return { product, movement };
   }
 &nbsp;
   /**
@@ -1300,7 +1300,7 @@ export default new InventoryService();
             <div class='footer quiet pad2 space-top1 center small'>
                 Code coverage generated by
                 <a href="https://istanbul.js.org/" target="_blank" rel="noopener noreferrer">istanbul</a>
-                at 2026-07-07T06:01:35.639Z
+                at 2026-07-07T06:48:58.585Z
             </div>
         <script src="../../prettify.js"></script>
         <script>

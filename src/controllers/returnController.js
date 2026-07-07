@@ -1,84 +1,40 @@
 import ReturnRequest from '../models/Return.js';
 import Order from '../models/Order.js';
-import Product from '../models/Product.js';
-import Payment from '../models/Payment.js';
 import User from '../models/User.js';
-import inventoryService from '../services/InventoryService.js';
-import notificationService from '../services/NotificationService.js';
+import returnService from '../services/ReturnService.js';
+import {
+  REFUND_STATUSES,
+  CANCELLABLE_STATUSES,
+  ADMIN_ACTIONABLE,
+  normalizeStatus
+} from '../utils/refundConstants.js';
 
-/**
- * Create return request
- */
-export const createReturnRequest = async (req, res, next) => {
-  const { orderId, returnReason, returnReasonDetails, items, refundType, customerNotes, photos } = req.body;
+const formatReturn = (doc) => returnService.serializeReturn(doc);
 
+export const getRefundEligibility = async (req, res, next) => {
   try {
-    // Verify order belongs to user
+    const order = await Order.findOne({ _id: req.params.orderId, user: req.user._id });
+    const eligibility = await returnService.checkOrderEligibility(order, req.user._id);
+    res.json({ success: true, eligibility });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const createReturnRequest = async (req, res, next) => {
+  try {
+    const { orderId, returnReason, returnReasonDetails, items, refundType, customerNotes, photos } = req.body;
+
     const order = await Order.findOne({ _id: orderId, user: req.user._id });
+    const eligibility = await returnService.checkOrderEligibility(order, req.user._id);
 
-    if (!order) {
-      return res.status(404).json({
-        success: false,
-        message: 'Order not found'
-      });
+    if (!eligibility.eligible) {
+      return res.status(400).json({ success: false, message: eligibility.reason });
     }
 
-    // Check if order is eligible for return (delivered within 30 days)
-    const isDelivered = order.isDelivered || order.orderStatus === 'Delivered';
-    if (!isDelivered) {
-      return res.status(400).json({
-        success: false,
-        message: 'Order must be delivered before requesting a return'
-      });
-    }
+    const returnedQuantities = await returnService.getReturnedQuantities(orderId);
+    const { processedItems, refundAmount } = returnService.validateItems(order, items, returnedQuantities);
 
-    const deliveryDate = order.deliveredAt || order.updatedAt;
-    const daysSinceDelivery = Math.floor(
-      (Date.now() - new Date(deliveryDate).getTime()) / (1000 * 60 * 60 * 24)
-    );
-
-    if (daysSinceDelivery > 30) {
-      return res.status(400).json({
-        success: false,
-        message: 'Return period has expired (30 days after delivery)'
-      });
-    }
-
-    // Validate items
-    for (const item of items) {
-      const orderItem = order.orderItems.find(
-        oi => oi.product.toString() === item.product
-      );
-      
-      if (!orderItem) {
-        return res.status(400).json({
-          success: false,
-          message: `Product ${item.product} not found in order`
-        });
-      }
-
-      if (item.quantity > orderItem.quantity) {
-        return res.status(400).json({
-          success: false,
-          message: `Cannot return more items than purchased for product ${item.product}`
-        });
-      }
-    }
-
-    // Calculate refund amount
-    let refundAmount = 0;
-    const processedItems = items.map(item => {
-      const orderItem = order.orderItems.find(
-        oi => oi.product.toString() === item.product
-      );
-      refundAmount += orderItem.price * item.quantity;
-      return {
-        ...item,
-        refundAmount: orderItem.price * item.quantity
-      };
-    });
-
-    // Create return request
     const returnRequest = await ReturnRequest.create({
       order: orderId,
       user: req.user._id,
@@ -87,111 +43,183 @@ export const createReturnRequest = async (req, res, next) => {
       items: processedItems,
       refundType,
       refundAmount,
+      approvedRefundAmount: refundAmount,
+      currency: order.currency || 'USD',
+      isPartialRefund: false,
       customerNotes,
-      photos,
+      photos: photos || [],
+      status: REFUND_STATUSES.PENDING,
+      createdBy: req.user._id,
+      updatedBy: req.user._id,
       statusHistory: [{
-        status: 'requested',
-        note: 'Return request submitted by customer'
+        status: REFUND_STATUSES.PENDING,
+        note: 'Refund request submitted',
+        updatedBy: req.user._id,
+        audience: 'customer'
       }]
     });
 
-    // Notify admin
-    await notificationService.createNotification({
-      recipient: req.user._id, // Would be admin in production
+    await returnService.notifyCustomer(req.user._id, {
       type: 'system',
-      title: 'New Return Request',
-      message: `Return request #${returnRequest.returnNumber} submitted for order ${orderId}`,
-      relatedType: 'order',
-      relatedId: orderId
+      title: 'Refund Request Submitted',
+      message: `Your refund request ${returnRequest.returnNumber} is pending review.`,
+      relatedId: orderId,
+      actionUrl: `/refunds/${returnRequest._id}`
     });
+
+    await returnService.notifyAdmins(
+      'New Refund Request',
+      `${req.user.name} submitted refund ${returnRequest.returnNumber} for order ${order.orderNumber || orderId}`,
+      orderId
+    );
 
     res.status(201).json({
       success: true,
-      message: 'Return request submitted successfully',
-      returnRequest
+      message: 'Refund request submitted successfully',
+      returnRequest: formatReturn(returnRequest)
+    });
+  } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ success: false, message: error.message });
+    }
+    next(error);
+  }
+};
+
+export const getUserReturns = async (req, res, next) => {
+  try {
+    const { status } = req.query;
+    const query = { user: req.user._id };
+    if (status) query.status = status;
+
+    const returns = await ReturnRequest.find(query)
+      .populate('order', 'orderNumber orderStatus totalPrice createdAt')
+      .populate('items.product', 'title images slug')
+      .sort({ createdAt: -1 });
+
+    res.json({
+      success: true,
+      returns: returns.map(formatReturn)
     });
   } catch (error) {
     next(error);
   }
 };
 
-/**
- * Get user's return requests
- */
-export const getUserReturns = async (req, res, next) => {
-  try {
-    const returns = await ReturnRequest.find({ user: req.user._id })
-      .populate('order', 'orderStatus createdAt totalPrice')
-      .populate('items.product', 'title images')
-      .sort({ createdAt: -1 });
-
-    res.json({ success: true, returns });
-  } catch (error) {
-    next(error);
-  }
-};
-
-/**
- * Get return request by ID
- */
 export const getReturnById = async (req, res, next) => {
-  const { id } = req.params;
-
   try {
-    const returnRequest = await ReturnRequest.findById(id)
+    const returnRequest = await ReturnRequest.findById(req.params.id)
       .populate('order')
-      .populate('items.product', 'title images price')
-      .populate('user', 'name email');
+      .populate('items.product', 'title images price slug')
+      .populate('user', 'name email')
+      .populate('statusHistory.updatedBy', 'name role')
+      .populate('processedBy', 'name');
 
     if (!returnRequest) {
-      return res.status(404).json({
-        success: false,
-        message: 'Return request not found'
-      });
+      return res.status(404).json({ success: false, message: 'Refund request not found' });
     }
 
-    // Check ownership or admin
     const isOwner = returnRequest.user._id.toString() === req.user._id.toString();
-    const isAdmin = ['admin', 'super_admin'].includes(req.user.role);
+    const isAdmin = ['admin', 'super_admin', 'support'].includes(req.user.role);
 
     if (!isOwner && !isAdmin) {
-      return res.status(403).json({
-        success: false,
-        message: 'Not authorized'
-      });
+      return res.status(403).json({ success: false, message: 'Not authorized' });
     }
 
-    res.json({ success: true, returnRequest });
+    const formatted = formatReturn(returnRequest);
+    if (!isAdmin) {
+      formatted.internalNotes = undefined;
+      formatted.statusHistory = formatted.statusHistory.filter(
+        (entry) => entry.audience !== 'internal'
+      );
+    }
+
+    res.json({ success: true, returnRequest: formatted });
   } catch (error) {
     next(error);
   }
 };
 
-/**
- * Admin: Get all return requests
- */
-export const getAllReturns = async (req, res, next) => {
-  const { status, page = 1, limit = 20 } = req.query;
-
+export const cancelReturnRequest = async (req, res, next) => {
   try {
-    const query = {};
-    if (status) query.status = status;
+    const returnRequest = await ReturnRequest.findOne({
+      _id: req.params.id,
+      user: req.user._id
+    });
 
-    const returns = await ReturnRequest.find(query)
-      .populate('order', 'orderNumber totalPrice')
-      .populate('user', 'name email')
-      .sort({ createdAt: -1 })
-      .skip((page - 1) * limit)
-      .limit(parseInt(limit));
+    if (!returnRequest) {
+      return res.status(404).json({ success: false, message: 'Refund request not found' });
+    }
 
-    const total = await ReturnRequest.countDocuments(query);
+    const status = normalizeStatus(returnRequest.status);
+    if (!CANCELLABLE_STATUSES.includes(returnRequest.status) && status !== REFUND_STATUSES.PENDING) {
+      return res.status(400).json({
+        success: false,
+        message: 'This refund request can no longer be cancelled'
+      });
+    }
+
+    returnRequest.status = REFUND_STATUSES.CANCELLED;
+    returnRequest.updatedBy = req.user._id;
+    returnService.appendHistory(returnRequest, {
+      status: REFUND_STATUSES.CANCELLED,
+      note: 'Cancelled by customer',
+      updatedBy: req.user._id
+    });
+
+    await returnRequest.save();
 
     res.json({
       success: true,
-      returns,
+      message: 'Refund request cancelled',
+      returnRequest: formatReturn(returnRequest)
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getAllReturns = async (req, res, next) => {
+  try {
+    const { status, page = 1, limit = 20, q } = req.query;
+    const query = {};
+
+    if (status) query.status = status;
+
+    if (q) {
+      const searchRegex = new RegExp(q.trim(), 'i');
+      const users = await User.find({
+        $or: [{ email: searchRegex }, { name: searchRegex }]
+      }).select('_id');
+      const userIds = users.map((u) => u._id);
+
+      query.$or = [
+        { returnNumber: searchRegex },
+        ...(userIds.length ? [{ user: { $in: userIds } }] : [])
+      ];
+
+      if (/^[0-9a-fA-F]{24}$/.test(q.trim())) {
+        query.$or.push({ order: q.trim() }, { _id: q.trim() });
+      }
+    }
+
+    const skip = (parseInt(page, 10) - 1) * parseInt(limit, 10);
+    const [returns, total] = await Promise.all([
+      ReturnRequest.find(query)
+        .populate('order', 'orderNumber totalPrice orderStatus')
+        .populate('user', 'name email')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit, 10)),
+      ReturnRequest.countDocuments(query)
+    ]);
+
+    res.json({
+      success: true,
+      returns: returns.map(formatReturn),
       pagination: {
-        page: parseInt(page),
-        pages: Math.ceil(total / limit),
+        page: parseInt(page, 10),
+        pages: Math.ceil(total / parseInt(limit, 10)),
         total
       }
     });
@@ -200,255 +228,301 @@ export const getAllReturns = async (req, res, next) => {
   }
 };
 
-/**
- * Admin: Approve return request
- */
 export const approveReturn = async (req, res, next) => {
-  const { id } = req.params;
-  const { adminNotes, returnShippingMethod, returnShippingCost, returnShippingPaidBy } = req.body;
-
   try {
-    const returnRequest = await ReturnRequest.findById(id);
-
+    const returnRequest = await ReturnRequest.findById(req.params.id);
     if (!returnRequest) {
-      return res.status(404).json({
-        success: false,
-        message: 'Return request not found'
-      });
+      return res.status(404).json({ success: false, message: 'Refund request not found' });
     }
 
-    if (returnRequest.status !== 'requested') {
-      return res.status(400).json({
-        success: false,
-        message: 'Return request is not in requested status'
-      });
+    if (!ADMIN_ACTIONABLE.approve.includes(returnRequest.status)) {
+      return res.status(400).json({ success: false, message: 'Refund cannot be approved in its current status' });
     }
 
-    // Update status
-    returnRequest.status = 'approved';
+    const {
+      adminNotes,
+      customerFacingNote,
+      internalNotes,
+      returnShippingMethod,
+      returnShippingCost,
+      returnShippingPaidBy
+    } = req.body;
+
+    returnRequest.status = REFUND_STATUSES.APPROVED;
     returnRequest.adminNotes = adminNotes;
+    returnRequest.customerFacingNote = customerFacingNote;
+    returnRequest.internalNotes = internalNotes;
     returnRequest.returnShippingMethod = returnShippingMethod;
     returnRequest.returnShippingCost = returnShippingCost;
     returnRequest.returnShippingPaidBy = returnShippingPaidBy;
-    returnRequest.statusHistory.push({
-      status: 'approved',
-      note: adminNotes || 'Return request approved',
-      updatedBy: req.user._id
+    returnRequest.updatedBy = req.user._id;
+
+    returnService.appendHistory(returnRequest, {
+      status: REFUND_STATUSES.APPROVED,
+      note: customerFacingNote || adminNotes || 'Refund approved',
+      updatedBy: req.user._id,
+      audience: 'customer'
     });
+
+    if (internalNotes) {
+      returnService.appendHistory(returnRequest, {
+        status: REFUND_STATUSES.APPROVED,
+        note: internalNotes,
+        updatedBy: req.user._id,
+        audience: 'internal'
+      });
+    }
 
     await returnRequest.save();
 
-    // Notify customer
-    await notificationService.createNotification({
-      recipient: returnRequest.user,
-      type: 'order_cancelled',
-      title: 'Return Approved',
-      message: `Your return request #${returnRequest.returnNumber} has been approved`,
-      relatedType: 'order',
-      relatedId: returnRequest.order
+    await returnService.notifyCustomer(returnRequest.user, {
+      type: 'refund_processed',
+      title: 'Refund Approved',
+      message: customerFacingNote || `Refund ${returnRequest.returnNumber} has been approved.`,
+      relatedId: returnRequest.order,
+      actionUrl: `/refunds/${returnRequest._id}`
     });
 
-    res.json({
-      success: true,
-      message: 'Return request approved',
-      returnRequest
-    });
+    res.json({ success: true, message: 'Refund approved', returnRequest: formatReturn(returnRequest) });
   } catch (error) {
     next(error);
   }
 };
 
-/**
- * Admin: Reject return request
- */
 export const rejectReturn = async (req, res, next) => {
-  const { id } = req.params;
-  const { adminNotes } = req.body;
-
   try {
-    const returnRequest = await ReturnRequest.findById(id);
-
+    const returnRequest = await ReturnRequest.findById(req.params.id);
     if (!returnRequest) {
-      return res.status(404).json({
-        success: false,
-        message: 'Return request not found'
-      });
+      return res.status(404).json({ success: false, message: 'Refund request not found' });
     }
 
-    returnRequest.status = 'rejected';
+    if (!ADMIN_ACTIONABLE.reject.includes(returnRequest.status)) {
+      return res.status(400).json({ success: false, message: 'Refund cannot be rejected in its current status' });
+    }
+
+    const { adminNotes, customerFacingNote, internalNotes } = req.body;
+    const customerNote = customerFacingNote || adminNotes || 'Your refund request was rejected.';
+
+    returnRequest.status = REFUND_STATUSES.REJECTED;
     returnRequest.adminNotes = adminNotes;
-    returnRequest.statusHistory.push({
-      status: 'rejected',
-      note: adminNotes,
-      updatedBy: req.user._id
+    returnRequest.customerFacingNote = customerNote;
+    returnRequest.internalNotes = internalNotes;
+    returnRequest.updatedBy = req.user._id;
+
+    returnService.appendHistory(returnRequest, {
+      status: REFUND_STATUSES.REJECTED,
+      note: customerNote,
+      updatedBy: req.user._id,
+      audience: 'customer'
     });
 
     await returnRequest.save();
 
-    // Notify customer
-    await notificationService.createNotification({
-      recipient: returnRequest.user,
+    await returnService.notifyCustomer(returnRequest.user, {
       type: 'system',
-      title: 'Return Request Rejected',
-      message: `Your return request #${returnRequest.returnNumber} has been rejected`,
-      relatedType: 'order',
-      relatedId: returnRequest.order
+      title: 'Refund Rejected',
+      message: customerNote,
+      relatedId: returnRequest.order,
+      actionUrl: `/refunds/${returnRequest._id}`
     });
 
-    res.json({
-      success: true,
-      message: 'Return request rejected',
-      returnRequest
-    });
+    res.json({ success: true, message: 'Refund rejected', returnRequest: formatReturn(returnRequest) });
   } catch (error) {
     next(error);
   }
 };
 
-/**
- * Admin: Mark return as received
- */
-export const receiveReturn = async (req, res, next) => {
-  const { id } = req.params;
-
+export const requestReturnInfo = async (req, res, next) => {
   try {
-    const returnRequest = await ReturnRequest.findById(id);
-
+    const returnRequest = await ReturnRequest.findById(req.params.id);
     if (!returnRequest) {
-      return res.status(404).json({
-        success: false,
-        message: 'Return request not found'
-      });
+      return res.status(404).json({ success: false, message: 'Refund request not found' });
     }
 
-    returnRequest.status = 'processing';
-    returnRequest.returnReceivedAt = new Date();
-    returnRequest.statusHistory.push({
-      status: 'processing',
-      note: 'Return items received',
-      updatedBy: req.user._id
+    if (!ADMIN_ACTIONABLE.requestInfo.includes(returnRequest.status)) {
+      return res.status(400).json({ success: false, message: 'Cannot request info for this refund status' });
+    }
+
+    const { customerFacingNote, internalNotes } = req.body;
+
+    returnRequest.status = REFUND_STATUSES.INFO_REQUESTED;
+    returnRequest.customerFacingNote = customerFacingNote;
+    returnRequest.internalNotes = internalNotes;
+    returnRequest.updatedBy = req.user._id;
+
+    returnService.appendHistory(returnRequest, {
+      status: REFUND_STATUSES.INFO_REQUESTED,
+      note: customerFacingNote,
+      updatedBy: req.user._id,
+      audience: 'customer'
     });
 
     await returnRequest.save();
 
-    res.json({
-      success: true,
-      message: 'Return marked as received',
-      returnRequest
+    await returnService.notifyCustomer(returnRequest.user, {
+      type: 'system',
+      title: 'Additional Information Required',
+      message: customerFacingNote,
+      relatedId: returnRequest.order,
+      actionUrl: `/refunds/${returnRequest._id}`
     });
+
+    res.json({ success: true, message: 'Information requested from customer', returnRequest: formatReturn(returnRequest) });
   } catch (error) {
     next(error);
   }
 };
 
-/**
- * Admin: Process refund for return
- */
-export const processReturnRefund = async (req, res, next) => {
-  const { id } = req.params;
-
+export const receiveReturn = async (req, res, next) => {
   try {
-    const returnRequest = await ReturnRequest.findById(id)
-      .populate('order');
-
+    const returnRequest = await ReturnRequest.findById(req.params.id);
     if (!returnRequest) {
-      return res.status(404).json({
-        success: false,
-        message: 'Return request not found'
-      });
+      return res.status(404).json({ success: false, message: 'Refund request not found' });
+    }
+
+    if (!ADMIN_ACTIONABLE.receive.includes(returnRequest.status)) {
+      return res.status(400).json({ success: false, message: 'Return items cannot be received in current status' });
+    }
+
+    returnRequest.status = REFUND_STATUSES.PROCESSING;
+    returnRequest.returnReceivedAt = new Date();
+    returnRequest.updatedBy = req.user._id;
+
+    returnService.appendHistory(returnRequest, {
+      status: REFUND_STATUSES.PROCESSING,
+      note: 'Returned items received at warehouse',
+      updatedBy: req.user._id
+    });
+
+    await returnRequest.save();
+
+    await returnService.notifyCustomer(returnRequest.user, {
+      type: 'system',
+      title: 'Return Received',
+      message: `We received your return for ${returnRequest.returnNumber}. Refund processing will begin shortly.`,
+      relatedId: returnRequest.order,
+      actionUrl: `/refunds/${returnRequest._id}`
+    });
+
+    res.json({ success: true, message: 'Return marked as received', returnRequest: formatReturn(returnRequest) });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const processReturnRefund = async (req, res, next) => {
+  try {
+    const returnRequest = await ReturnRequest.findById(req.params.id).populate('order');
+    if (!returnRequest) {
+      return res.status(404).json({ success: false, message: 'Refund request not found' });
+    }
+
+    if (!ADMIN_ACTIONABLE.refund.includes(returnRequest.status)) {
+      return res.status(400).json({ success: false, message: 'Refund cannot be processed in current status' });
     }
 
     const order = returnRequest.order;
+    const maxRefund = returnRequest.refundAmount;
+    let finalRefund = req.body.refundAmount != null ? Number(req.body.refundAmount) : maxRefund;
 
-    // Process refund based on refund type
-    if (returnRequest.refundType === 'original_payment') {
-      // Find the original payment
-      const payment = await Payment.findOne({ order: order._id, status: 'succeeded' });
-
-      if (payment) {
-        // Process refund through payment gateway
-        // This would call the appropriate payment service
-        // For now, we'll just mark it as refunded
-        
-        // Record refund
-        await Payment.create({
-          order: order._id,
-          transactionId: `refund-${Date.now()}`,
-          amount: -returnRequest.refundAmount,
-          currency: payment.currency,
-          gateway: payment.gateway,
-          status: 'refunded'
-        });
-      }
-    } else if (returnRequest.refundType === 'store_credit') {
-      // Add store credit to user
-      await User.findByIdAndUpdate(returnRequest.user, {
-        $inc: { storeCredit: returnRequest.refundAmount }
+    if (Number.isNaN(finalRefund) || finalRefund <= 0 || finalRefund > maxRefund) {
+      return res.status(400).json({
+        success: false,
+        message: `Refund amount must be between 0.01 and ${maxRefund.toFixed(2)}`
       });
     }
 
-    // Return stock to inventory
-    for (const item of returnRequest.items) {
-      await inventoryService.addStock(
-        item.product,
-        item.quantity,
-        'return',
-        {
-          referenceType: 'return',
-          referenceId: returnRequest._id,
-          reason: `Return #${returnRequest.returnNumber}`
-        }
-      );
+    await returnService.processRefundPayment(returnRequest, order, finalRefund);
+
+    if (req.body.restoreInventory !== false) {
+      await returnService.restoreInventory(returnRequest, req.user._id);
     }
 
-    // Update return status
-    returnRequest.status = 'completed';
+    returnRequest.status = REFUND_STATUSES.REFUNDED;
     returnRequest.refundStatus = 'completed';
+    returnRequest.approvedRefundAmount = finalRefund;
+    returnRequest.isPartialRefund = finalRefund < maxRefund;
     returnRequest.processedBy = req.user._id;
-    returnRequest.statusHistory.push({
-      status: 'completed',
-      note: 'Refund processed and stock returned',
-      updatedBy: req.user._id
+    returnRequest.updatedBy = req.user._id;
+    returnRequest.refundedAt = new Date();
+
+    if (req.body.customerFacingNote) {
+      returnRequest.customerFacingNote = req.body.customerFacingNote;
+    }
+    if (req.body.internalNotes) {
+      returnRequest.internalNotes = req.body.internalNotes;
+    }
+
+    returnService.appendHistory(returnRequest, {
+      status: REFUND_STATUSES.REFUNDED,
+      note: req.body.customerFacingNote || `Refund of ${finalRefund.toFixed(2)} ${returnRequest.currency} processed`,
+      updatedBy: req.user._id,
+      audience: 'customer'
     });
 
     await returnRequest.save();
 
-    // Update order if all items returned
-    const totalOrderItems = order.orderItems.reduce((sum, item) => sum + item.quantity, 0);
-    const totalReturnedItems = returnRequest.items.reduce((sum, item) => sum + item.quantity, 0);
+    const totalReturned = await returnService.getReturnedQuantities(order._id);
+    const totalOrderQty = order.orderItems.reduce((sum, item) => sum + item.quantity, 0);
+    const totalReturnedQty = Object.values(totalReturned).reduce((a, b) => a + b, 0);
 
-    if (totalReturnedItems >= totalOrderItems) {
+    if (totalReturnedQty >= totalOrderQty || finalRefund >= order.totalPrice) {
       order.orderStatus = 'Refunded';
       await order.save();
     }
 
-    // Notify customer
-    await notificationService.createNotification({
-      recipient: returnRequest.user,
+    await returnService.notifyCustomer(returnRequest.user, {
       type: 'refund_processed',
-      title: 'Refund Processed',
-      message: `Your refund of $${returnRequest.refundAmount.toFixed(2)} for return #${returnRequest.returnNumber} has been processed`,
-      relatedType: 'order',
-      relatedId: order._id
+      title: 'Refund Completed',
+      message: `Your refund of ${finalRefund.toFixed(2)} ${returnRequest.currency} for ${returnRequest.returnNumber} has been processed.`,
+      relatedId: order._id,
+      actionUrl: `/refunds/${returnRequest._id}`
     });
 
-    res.json({
-      success: true,
-      message: 'Refund processed successfully',
-      returnRequest
+    res.json({ success: true, message: 'Refund processed successfully', returnRequest: formatReturn(returnRequest) });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const markUnderReview = async (req, res, next) => {
+  try {
+    const returnRequest = await ReturnRequest.findById(req.params.id);
+    if (!returnRequest) {
+      return res.status(404).json({ success: false, message: 'Refund request not found' });
+    }
+
+    if (![REFUND_STATUSES.PENDING, 'requested'].includes(returnRequest.status)) {
+      return res.status(400).json({ success: false, message: 'Only pending requests can be moved to review' });
+    }
+
+    returnRequest.status = REFUND_STATUSES.UNDER_REVIEW;
+    returnRequest.updatedBy = req.user._id;
+    returnService.appendHistory(returnRequest, {
+      status: REFUND_STATUSES.UNDER_REVIEW,
+      note: req.body.internalNotes || 'Refund moved to under review',
+      updatedBy: req.user._id,
+      audience: 'internal'
     });
+
+    await returnRequest.save();
+    res.json({ success: true, returnRequest: formatReturn(returnRequest) });
   } catch (error) {
     next(error);
   }
 };
 
 export default {
+  getRefundEligibility,
   createReturnRequest,
   getUserReturns,
   getReturnById,
+  cancelReturnRequest,
   getAllReturns,
   approveReturn,
   rejectReturn,
+  requestReturnInfo,
   receiveReturn,
-  processReturnRefund
+  processReturnRefund,
+  markUnderReview
 };
