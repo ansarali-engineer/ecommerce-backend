@@ -28,8 +28,15 @@ const paymentSchema = new mongoose.Schema({
   status: {
     type: String,
     required: true,
-    enum: ['succeeded', 'failed', 'pending', 'refunded'],
+    enum: ['succeeded', 'failed', 'pending', 'refunded', 'partially_refunded'],
     default: 'pending'
+  },
+  refundAmount: {
+    type: Number,
+    default: 0
+  },
+  refundedAt: {
+    type: Date
   },
   rawWebhookPayload: {
     type: mongoose.Schema.Types.Mixed

@@ -15,7 +15,191 @@ const authorizeOrderAccess = (order, user, res) => {
 };
 
 /**
- * Setup payment for order - Creates payment intent
+ * Create Stripe Payment Intent BEFORE order creation
+ * This is the first step - client calls this to get a payment intent
+ * Order is only created after successful payment
+ */
+export const createStripePaymentIntent = async (req, res, next) => {
+  const { amount, currency = 'usd', orderData } = req.body;
+
+  try {
+    // Validate amount
+    if (!amount || amount <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid payment amount'
+      });
+    }
+
+    // Validate order data exists
+    if (!orderData || !orderData.orderItems || orderData.orderItems.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Order data is required'
+      });
+    }
+
+    // Verify inventory availability before creating payment intent
+    for (const item of orderData.orderItems) {
+      const product = await Product.findById(item.product);
+      if (!product) {
+        return res.status(404).json({
+          success: false,
+          message: `Product ${item.product} not found`
+        });
+      }
+      if (product.inventory < item.quantity) {
+        return res.status(400).json({
+          success: false,
+          message: `Insufficient inventory for ${product.title}. Available: ${product.inventory}`
+        });
+      }
+    }
+
+    // Create payment intent with order data in metadata
+    const paymentIntent = await stripeService.createPaymentIntent(
+      amount,
+      currency,
+      null, // No orderId yet - will be added after payment
+      {
+        metadata: {
+          userId: req.user._id.toString(),
+          orderData: JSON.stringify({
+            ...orderData,
+            userId: req.user._id.toString()
+          })
+        }
+      }
+    );
+
+    // Store payment intent in a temporary collection or cache
+    // For simplicity, we'll return it and the client will send it back
+    res.json({
+      success: true,
+      clientSecret: paymentIntent.clientSecret,
+      paymentIntentId: paymentIntent.id,
+      amount: paymentIntent.amount
+    });
+  } catch (error) {
+    console.error('[PaymentController] Error creating payment intent:', error.message);
+    next(error);
+  }
+};
+
+/**
+ * Confirm payment and create order
+ * Called after Stripe payment succeeds on the client
+ */
+export const confirmStripePayment = async (req, res, next) => {
+  const { paymentIntentId } = req.body;
+
+  try {
+    if (!paymentIntentId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Payment intent ID is required'
+      });
+    }
+
+    // Retrieve the payment intent from Stripe
+    const paymentIntent = await stripeService.retrievePaymentIntent(paymentIntentId);
+
+    // Verify payment status
+    if (paymentIntent.status !== 'succeeded') {
+      return res.status(400).json({
+        success: false,
+        message: `Payment not completed. Status: ${paymentIntent.status}`
+      });
+    }
+
+    // Check if order already exists for this payment
+    const existingPayment = await Payment.findOne({ transactionId: paymentIntentId });
+    if (existingPayment) {
+      // Order already created, return it
+      const existingOrder = await Order.findById(existingPayment.order);
+      return res.json({
+        success: true,
+        message: 'Order already exists',
+        order: existingOrder
+      });
+    }
+
+    // Parse order data from metadata
+    let orderData;
+    try {
+      orderData = JSON.parse(paymentIntent.metadata?.orderData || '{}');
+    } catch (e) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid order data in payment metadata'
+      });
+    }
+
+    // Verify user owns this payment
+    if (orderData.userId !== req.user._id.toString()) {
+      return res.status(403).json({
+        success: false,
+        message: 'Not authorized to confirm this payment'
+      });
+    }
+
+    // Create the order NOW (after payment confirmed)
+    const order = await Order.create({
+      user: req.user._id,
+      orderItems: orderData.orderItems,
+      shippingAddress: orderData.shippingAddress,
+      paymentMethod: 'Stripe',
+      taxPrice: orderData.taxPrice || 0,
+      shippingPrice: orderData.shippingPrice || 0,
+      discountPrice: orderData.discountPrice || 0,
+      totalPrice: paymentIntent.amount / 100, // Use actual charged amount
+      isPaid: true,
+      paidAt: new Date(),
+      orderStatus: 'Paid',
+      paymentResult: {
+        id: paymentIntent.id,
+        status: paymentIntent.status,
+        update_time: new Date().toISOString(),
+        email_address: paymentIntent.receipt_email
+      }
+    });
+
+    // Deduct inventory
+    for (const item of orderData.orderItems) {
+      await Product.findByIdAndUpdate(item.product, {
+        $inc: { inventory: -item.quantity }
+      });
+    }
+    order.inventoryDeducted = true;
+    await order.save();
+
+    // Create payment record
+    await Payment.create({
+      order: order._id,
+      transactionId: paymentIntentId,
+      amount: paymentIntent.amount / 100,
+      currency: paymentIntent.currency.toUpperCase(),
+      gateway: 'Stripe',
+      status: 'succeeded',
+      rawWebhookPayload: paymentIntent
+    });
+
+    console.log(`[PaymentController] Order ${order._id} created after successful Stripe payment`);
+
+    res.json({
+      success: true,
+      message: 'Payment confirmed and order created',
+      order
+    });
+  } catch (error) {
+    console.error('[PaymentController] Error confirming payment:', error.message);
+    next(error);
+  }
+};
+
+/**
+ * Setup payment for order (PayPal, Razorpay, or legacy Stripe flow)
+ * For Stripe, prefer createStripePaymentIntent instead
  */
 export const processPayment = async (req, res, next) => {
   const { orderId, gateway } = req.body;
@@ -23,9 +207,9 @@ export const processPayment = async (req, res, next) => {
   try {
     // Validate gateway
     if (!['Stripe', 'PayPal', 'Razorpay'].includes(gateway)) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Invalid payment gateway. Supported: Stripe, PayPal, Razorpay' 
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid payment gateway. Supported: Stripe, PayPal, Razorpay'
       });
     }
 
@@ -48,6 +232,7 @@ export const processPayment = async (req, res, next) => {
 
     switch (gateway) {
       case 'Stripe': {
+        // For backwards compatibility, still support this flow
         const stripeIntent = await stripeService.createPaymentIntent(
           order.totalPrice,
           'usd',
@@ -107,11 +292,10 @@ export const verifyRazorpayPayment = async (req, res, next) => {
   const { orderId, razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body;
 
   try {
-    // Validate required fields
     if (!orderId || !razorpayOrderId || !razorpayPaymentId || !razorpaySignature) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Missing required payment verification fields' 
+      return res.status(400).json({
+        success: false,
+        message: 'Missing required payment verification fields'
       });
     }
 
@@ -120,11 +304,11 @@ export const verifyRazorpayPayment = async (req, res, next) => {
       razorpayPaymentId,
       razorpaySignature
     );
-    
+
     if (!isValid) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Invalid signature. Payment verification failed.' 
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid signature. Payment verification failed.'
       });
     }
 
@@ -174,10 +358,10 @@ export const verifyRazorpayPayment = async (req, res, next) => {
 
     console.log(`[PaymentController] Razorpay payment verified for order ${orderId}`);
 
-    res.json({ 
-      success: true, 
-      message: 'Payment verified and order completed successfully', 
-      order 
+    res.json({
+      success: true,
+      message: 'Payment verified and order completed successfully',
+      order
     });
   } catch (error) {
     console.error('[PaymentController] Error in verifyRazorpayPayment:', error.message);
@@ -193,9 +377,9 @@ export const confirmPayPalPayment = async (req, res, next) => {
 
   try {
     if (!orderId || !paypalOrderId) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Missing orderId or paypalOrderId' 
+      return res.status(400).json({
+        success: false,
+        message: 'Missing orderId or paypalOrderId'
       });
     }
 
@@ -211,7 +395,7 @@ export const confirmPayPalPayment = async (req, res, next) => {
     }
 
     const capture = await paypalService.captureOrder(paypalOrderId);
-    
+
     if (capture.status !== 'COMPLETED') {
       return res.status(400).json({
         success: false,
@@ -255,10 +439,10 @@ export const confirmPayPalPayment = async (req, res, next) => {
 
     console.log(`[PaymentController] PayPal payment confirmed for order ${orderId}`);
 
-    res.json({ 
-      success: true, 
-      message: 'PayPal payment confirmed successfully', 
-      order 
+    res.json({
+      success: true,
+      message: 'PayPal payment confirmed successfully',
+      order
     });
   } catch (error) {
     console.error('[PaymentController] Error in confirmPayPalPayment:', error.message);
@@ -277,7 +461,6 @@ export const stripeWebhook = async (req, res, next) => {
   let event;
 
   try {
-    // Verify webhook signature
     event = stripeService.verifyWebhookSignature(req.body, sig, webhookSecret);
   } catch (err) {
     console.error('[PaymentController] Webhook signature verification failed:', err.message);
@@ -287,22 +470,10 @@ export const stripeWebhook = async (req, res, next) => {
   console.log(`[PaymentController] Received Stripe webhook: ${event.type}`);
 
   try {
-    // Handle the event
     const result = await stripeService.handleWebhookEvent(event, Order, Payment, Product);
-
-    if (result.handled) {
-      console.log(`[PaymentController] Successfully processed webhook: ${event.type}`);
-    } else {
-      console.log(`[PaymentController] Webhook not fully processed: ${event.type}`, result.error || '');
-    }
-
-    // Always return 200 to acknowledge receipt
     res.json({ received: true, handled: result.handled });
   } catch (error) {
     console.error('[PaymentController] Error processing webhook:', error.message);
-    
-    // Still return 200 to prevent Stripe from retrying
-    // Log the error for investigation
     res.json({ received: true, handled: false, error: error.message });
   }
 };
@@ -328,30 +499,27 @@ export const processRefund = async (req, res, next) => {
       return res.status(400).json({ success: false, message: 'Order is already refunded' });
     }
 
-    // Only Stripe refunds are supported via this endpoint
     if (order.paymentMethod !== 'Stripe') {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'Refunds only supported for Stripe payments' 
+      return res.status(400).json({
+        success: false,
+        message: 'Refunds only supported for Stripe payments'
       });
     }
 
     const paymentIntentId = order.paymentResult?.id;
     if (!paymentIntentId) {
-      return res.status(400).json({ 
-        success: false, 
-        message: 'No payment intent found for this order' 
+      return res.status(400).json({
+        success: false,
+        message: 'No payment intent found for this order'
       });
     }
 
-    // Process refund through Stripe
     const refund = await stripeService.createRefund(
       paymentIntentId,
-      amount || null, // Null for full refund
+      amount || null,
       reason || 'requested_by_customer'
     );
 
-    // Update order
     const refundAmount = refund.amount || order.totalPrice;
     const isFullRefund = refundAmount >= order.totalPrice;
 
@@ -362,17 +530,15 @@ export const processRefund = async (req, res, next) => {
 
     await order.save();
 
-    // Update payment record
     await Payment.findOneAndUpdate(
       { order: order._id },
-      { 
+      {
         status: isFullRefund ? 'refunded' : 'partially_refunded',
         refundAmount,
         refundedAt: new Date()
       }
     );
 
-    // Restore inventory for full refunds
     if (isFullRefund && order.inventoryDeducted) {
       for (const item of order.orderItems) {
         await Product.findByIdAndUpdate(item.product, {
@@ -380,8 +546,6 @@ export const processRefund = async (req, res, next) => {
         });
       }
     }
-
-    console.log(`[PaymentController] Refund processed for order ${orderId}`);
 
     res.json({
       success: true,
@@ -433,6 +597,8 @@ export const getPaymentDetails = async (req, res, next) => {
 };
 
 export default {
+  createStripePaymentIntent,
+  confirmStripePayment,
   processPayment,
   verifyRazorpayPayment,
   confirmPayPalPayment,

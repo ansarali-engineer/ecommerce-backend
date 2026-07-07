@@ -1,5 +1,7 @@
 import express from 'express';
 import {
+  createStripePaymentIntent,
+  confirmStripePayment,
   processPayment,
   verifyRazorpayPayment,
   confirmPayPalPayment,
@@ -12,8 +14,22 @@ import { protect, admin } from '../middleware/authMiddleware.js';
 const router = express.Router();
 
 /**
+ * @route   POST /api/payments/stripe/create-intent
+ * @desc    Create Stripe PaymentIntent BEFORE order creation
+ * @access  Private
+ */
+router.post('/stripe/create-intent', protect, createStripePaymentIntent);
+
+/**
+ * @route   POST /api/payments/stripe/confirm
+ * @desc    Confirm Stripe payment and create order AFTER payment succeeds
+ * @access  Private
+ */
+router.post('/stripe/confirm', protect, confirmStripePayment);
+
+/**
  * @route   POST /api/payments/process
- * @desc    Create payment session/intent for an order
+ * @desc    Create payment session/intent for an order (PayPal, Razorpay, or legacy Stripe)
  * @access  Private
  */
 router.post('/process', protect, processPayment);
