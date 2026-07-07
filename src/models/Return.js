@@ -16,7 +16,7 @@ const returnRequestSchema = new mongoose.Schema({
   returnNumber: {
     type: String,
     unique: true,
-    required: true
+    // generated in pre-save hook if missing
   },
   returnReason: {
     type: String,
