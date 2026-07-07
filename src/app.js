@@ -39,7 +39,7 @@ app.use(withDB); // ← runs before every route, no need to call connectDB in ea
 
 // Enable CORS
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'https://ecommerce-frontend-sable-zeta.vercel.app',
+  origin:'https://ecommerce-frontend-sable-zeta.vercel.app' || process.env.FRONTEND_URL,
   credentials: true
 }));
 
