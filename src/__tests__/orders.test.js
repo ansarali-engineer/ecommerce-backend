@@ -5,7 +5,6 @@ import Product from '../models/Product.js';
 import Category from '../models/Category.js';
 import User from '../models/User.js';
 import Cart from '../models/Cart.js';
-import mongoose from 'mongoose';
 
 describe('Order Endpoints', () => {
   let userToken;
@@ -13,22 +12,7 @@ describe('Order Endpoints', () => {
   let testCategory;
   let testProduct;
 
-  beforeAll(async () => {
-    await mongoose.connect(process.env.MONGO_URI_TEST || 'mongodb://localhost:27017/ecommerce_test');
-  });
-
-  afterAll(async () => {
-    await mongoose.connection.close();
-  });
-
   beforeEach(async () => {
-    await Order.deleteMany({});
-    await Product.deleteMany({});
-    await Category.deleteMany({});
-    await User.deleteMany({});
-    await Cart.deleteMany({});
-
-    // Create user
     const userResponse = await request(app)
       .post('/api/auth/register')
       .send({
@@ -36,11 +20,10 @@ describe('Order Endpoints', () => {
         email: 'order@example.com',
         password: 'OrderPass123'
       });
-    
+
     userToken = userResponse.body.token;
     userId = userResponse.body.user._id;
 
-    // Create category and product
     testCategory = await Category.create({
       name: 'Test Category',
       slug: 'test-category'
@@ -53,11 +36,10 @@ describe('Order Endpoints', () => {
       price: 49.99,
       category: testCategory._id,
       inventory: 100,
-      images: ['https://example.com/image.jpg'],
+      images: [{ url: 'https://example.com/image.jpg', isPrimary: true }],
       status: 'active'
     });
 
-    // Add to cart
     await Cart.create({
       user: userId,
       items: [{ product: testProduct._id, quantity: 2 }]
@@ -71,7 +53,7 @@ describe('Order Endpoints', () => {
           product: testProduct._id,
           title: testProduct.title,
           quantity: 2,
-          image: testProduct.images[0],
+          image: testProduct.images[0].url,
           price: testProduct.price
         }],
         shippingAddress: {
@@ -97,6 +79,7 @@ describe('Order Endpoints', () => {
       expect(response.body.success).toBe(true);
       expect(response.body.order.orderStatus).toBe('Processing');
       expect(response.body.order.paymentMethod).toBe('CashOnDelivery');
+      expect(response.body.order.totalPrice).toBe(114.98);
     });
 
     it('should fail without authentication', async () => {
@@ -116,7 +99,6 @@ describe('Order Endpoints', () => {
     });
 
     it('should fail with insufficient inventory', async () => {
-      // Update product inventory to low value
       await Product.findByIdAndUpdate(testProduct._id, { inventory: 1 });
 
       const response = await request(app)
@@ -127,7 +109,7 @@ describe('Order Endpoints', () => {
             product: testProduct._id,
             title: testProduct.title,
             quantity: 2,
-            image: testProduct.images[0],
+            image: testProduct.images[0].url,
             price: testProduct.price
           }],
           shippingAddress: {
@@ -148,16 +130,15 @@ describe('Order Endpoints', () => {
     });
   });
 
-  describe('GET /api/orders/myorders', () => {
+  describe('GET /api/orders', () => {
     beforeEach(async () => {
-      // Create test order
       await Order.create({
         user: userId,
         orderItems: [{
           product: testProduct._id,
           title: testProduct.title,
           quantity: 1,
-          image: testProduct.images[0],
+          image: testProduct.images[0].url,
           price: testProduct.price
         }],
         shippingAddress: {
@@ -168,6 +149,7 @@ describe('Order Endpoints', () => {
           country: 'US'
         },
         paymentMethod: 'CashOnDelivery',
+        subtotal: 49.99,
         taxPrice: 5.00,
         shippingPrice: 10.00,
         totalPrice: 64.99,
@@ -177,7 +159,7 @@ describe('Order Endpoints', () => {
 
     it('should return user orders', async () => {
       const response = await request(app)
-        .get('/api/orders/myorders')
+        .get('/api/orders')
         .set('Authorization', `Bearer ${userToken}`)
         .expect(200);
 
@@ -186,7 +168,7 @@ describe('Order Endpoints', () => {
     });
   });
 
-  describe('PUT /api/orders/:id/cancel', () => {
+  describe('PUT /api/orders/:id', () => {
     let testOrder;
 
     beforeEach(async () => {
@@ -196,7 +178,7 @@ describe('Order Endpoints', () => {
           product: testProduct._id,
           title: testProduct.title,
           quantity: 1,
-          image: testProduct.images[0],
+          image: testProduct.images[0].url,
           price: testProduct.price
         }],
         shippingAddress: {
@@ -207,6 +189,7 @@ describe('Order Endpoints', () => {
           country: 'US'
         },
         paymentMethod: 'CashOnDelivery',
+        subtotal: 49.99,
         taxPrice: 5.00,
         shippingPrice: 10.00,
         totalPrice: 64.99,
@@ -216,7 +199,7 @@ describe('Order Endpoints', () => {
 
     it('should cancel pending order', async () => {
       const response = await request(app)
-        .put(`/api/orders/${testOrder._id}/cancel`)
+        .put(`/api/orders/${testOrder._id}`)
         .set('Authorization', `Bearer ${userToken}`)
         .expect(200);
 
@@ -225,11 +208,10 @@ describe('Order Endpoints', () => {
     });
 
     it('should not cancel shipped order', async () => {
-      // Update order to shipped
       await Order.findByIdAndUpdate(testOrder._id, { orderStatus: 'Shipped' });
 
       const response = await request(app)
-        .put(`/api/orders/${testOrder._id}/cancel`)
+        .put(`/api/orders/${testOrder._id}`)
         .set('Authorization', `Bearer ${userToken}`)
         .expect(400);
 

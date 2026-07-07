@@ -11,7 +11,11 @@ import {
   updateOrderStatus,
   processRefund,
   getAllUsers,
-  getDashboardStats
+  getDashboardStats,
+  getAllCoupons,
+  createCoupon,
+  updateCoupon,
+  deleteCoupon
 } from '../controllers/adminController.js';
 import { protect, admin } from '../middleware/authMiddleware.js';
 import { validateBody } from '../middleware/validationMiddleware.js';
@@ -45,5 +49,12 @@ router.put('/orders/:id/refund', processRefund);
 
 // Users
 router.get('/users', getAllUsers);
+
+// Coupons
+router.get('/coupons', getAllCoupons);
+router.post('/coupons', validateBody(couponSchema), createCoupon);
+router.route('/coupons/:id')
+  .put(validateBody(couponSchema.fork(Object.keys(couponSchema.describe().keys), (schema) => schema.optional())), updateCoupon)
+  .delete(deleteCoupon);
 
 export default router;

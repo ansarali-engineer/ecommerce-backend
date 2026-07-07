@@ -87,10 +87,20 @@ const authLimiter = rateLimit({
   }
 });
 
+const contactLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  message: {
+    success: false,
+    message: 'Too many contact form submissions, please try again later'
+  }
+});
+
 app.use('/api/auth/login', authLimiter);
 app.use('/api/auth/register', apiLimiter);
 app.use('/api/auth/forgot-password', authLimiter);
 app.use('/api/payments', apiLimiter);
+app.use('/api/contact', contactLimiter);
 
 // API Documentation
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));

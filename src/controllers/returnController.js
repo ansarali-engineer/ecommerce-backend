@@ -2,6 +2,7 @@ import ReturnRequest from '../models/Return.js';
 import Order from '../models/Order.js';
 import Product from '../models/Product.js';
 import Payment from '../models/Payment.js';
+import User from '../models/User.js';
 import inventoryService from '../services/InventoryService.js';
 import notificationService from '../services/NotificationService.js';
 
@@ -22,16 +23,18 @@ export const createReturnRequest = async (req, res, next) => {
       });
     }
 
-    // Check if order is eligible for return (e.g., within 30 days of delivery)
-    if (!order.isDelivered) {
+    // Check if order is eligible for return (delivered within 30 days)
+    const isDelivered = order.isDelivered || order.orderStatus === 'Delivered';
+    if (!isDelivered) {
       return res.status(400).json({
         success: false,
-        message: 'Order must be delivered before requesting return'
+        message: 'Order must be delivered before requesting a return'
       });
     }
 
+    const deliveryDate = order.deliveredAt || order.updatedAt;
     const daysSinceDelivery = Math.floor(
-      (Date.now() - order.deliveredAt) / (1000 * 60 * 60 * 24)
+      (Date.now() - new Date(deliveryDate).getTime()) / (1000 * 60 * 60 * 24)
     );
 
     if (daysSinceDelivery > 30) {

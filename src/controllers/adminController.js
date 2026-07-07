@@ -2,6 +2,7 @@ import User from '../models/User.js';
 import Product from '../models/Product.js';
 import Category from '../models/Category.js';
 import Order from '../models/Order.js';
+import Coupon from '../models/Coupon.js';
 
 // ================= PRODUCT MANAGEMENT =================
 
@@ -356,6 +357,66 @@ export const getDashboardStats = async (req, res, next) => {
         salesTrend
       }
     });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// ================= COUPON MANAGEMENT =================
+
+export const getAllCoupons = async (req, res, next) => {
+  try {
+    const coupons = await Coupon.find().sort({ createdAt: -1 });
+    res.json({ success: true, coupons });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const createCoupon = async (req, res, next) => {
+  try {
+    const coupon = await Coupon.create({
+      ...req.body,
+      code: req.body.code.toUpperCase().trim()
+    });
+    res.status(201).json({ success: true, message: 'Coupon created successfully', coupon });
+  } catch (error) {
+    if (error.code === 11000) {
+      return res.status(400).json({ success: false, message: 'Coupon code already exists' });
+    }
+    next(error);
+  }
+};
+
+export const updateCoupon = async (req, res, next) => {
+  try {
+    const updates = { ...req.body };
+    if (updates.code) {
+      updates.code = updates.code.toUpperCase().trim();
+    }
+
+    const coupon = await Coupon.findByIdAndUpdate(req.params.id, updates, {
+      new: true,
+      runValidators: true
+    });
+
+    if (!coupon) {
+      return res.status(404).json({ success: false, message: 'Coupon not found' });
+    }
+
+    res.json({ success: true, coupon });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const deleteCoupon = async (req, res, next) => {
+  try {
+    const coupon = await Coupon.findByIdAndDelete(req.params.id);
+    if (!coupon) {
+      return res.status(404).json({ success: false, message: 'Coupon not found' });
+    }
+    res.json({ success: true, message: 'Coupon deleted successfully' });
   } catch (error) {
     next(error);
   }

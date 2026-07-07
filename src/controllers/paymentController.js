@@ -4,6 +4,15 @@ import Product from '../models/Product.js';
 import stripeService from '../services/StripeService.js';
 import paypalService from '../services/PayPalService.js';
 import razorpayService from '../services/RazorpayService.js';
+import { isOrderOwnerOrAdmin } from '../utils/authHelpers.js';
+
+const authorizeOrderAccess = (order, user, res) => {
+  if (!isOrderOwnerOrAdmin(order, user)) {
+    res.status(403).json({ success: false, message: 'Not authorized to access this order' });
+    return false;
+  }
+  return true;
+};
 
 // Setup payment for order
 export const processPayment = async (req, res, next) => {
@@ -15,6 +24,8 @@ export const processPayment = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
 
+    if (!authorizeOrderAccess(order, req.user, res)) return;
+
     if (order.isPaid) {
       return res.status(400).json({ success: false, message: 'Order is already paid' });
     }
@@ -22,8 +33,12 @@ export const processPayment = async (req, res, next) => {
     let responseData = {};
 
     switch (gateway) {
-      case 'Stripe':
-        const stripeIntent = await stripeService.createPaymentIntent(order.totalPrice, 'usd', order._id.toString());
+      case 'Stripe': {
+        const stripeIntent = await stripeService.createPaymentIntent(
+          order.totalPrice,
+          'usd',
+          order._id.toString()
+        );
         responseData = {
           gateway: 'Stripe',
           paymentIntentId: stripeIntent.id,
@@ -31,8 +46,9 @@ export const processPayment = async (req, res, next) => {
           amount: stripeIntent.amount
         };
         break;
+      }
 
-      case 'PayPal':
+      case 'PayPal': {
         const paypalOrder = await paypalService.createOrder(order.totalPrice, 'USD');
         responseData = {
           gateway: 'PayPal',
@@ -40,9 +56,14 @@ export const processPayment = async (req, res, next) => {
           links: paypalOrder.links
         };
         break;
+      }
 
-      case 'Razorpay':
-        const razorpayOrder = await razorpayService.createOrder(order.totalPrice, 'INR', order._id.toString());
+      case 'Razorpay': {
+        const razorpayOrder = await razorpayService.createOrder(
+          order.totalPrice,
+          'INR',
+          order._id.toString()
+        );
         responseData = {
           gateway: 'Razorpay',
           razorpayOrderId: razorpayOrder.id,
@@ -50,6 +71,7 @@ export const processPayment = async (req, res, next) => {
           currency: razorpayOrder.currency
         };
         break;
+      }
 
       default:
         return res.status(400).json({ success: false, message: 'Invalid payment gateway selected' });
@@ -69,7 +91,11 @@ export const verifyRazorpayPayment = async (req, res, next) => {
   const { orderId, razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body;
 
   try {
-    const isValid = razorpayService.verifyPaymentSignature(razorpayOrderId, razorpayPaymentId, razorpaySignature);
+    const isValid = razorpayService.verifyPaymentSignature(
+      razorpayOrderId,
+      razorpayPaymentId,
+      razorpaySignature
+    );
     if (!isValid) {
       return res.status(400).json({ success: false, message: 'Invalid signature. Payment verification failed.' });
     }
@@ -79,7 +105,8 @@ export const verifyRazorpayPayment = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
 
-    // Update order status
+    if (!authorizeOrderAccess(order, req.user, res)) return;
+
     order.isPaid = true;
     order.paidAt = Date.now();
     order.orderStatus = 'Paid';
@@ -91,8 +118,6 @@ export const verifyRazorpayPayment = async (req, res, next) => {
 
     await order.save();
 
-    // Deduct stock levels
-    // Deduct stock levels only if not already deducted at order creation
     if (!order.inventoryDeducted) {
       for (const item of order.orderItems) {
         await Product.findByIdAndUpdate(item.product, {
@@ -103,7 +128,6 @@ export const verifyRazorpayPayment = async (req, res, next) => {
       await order.save();
     }
 
-    // Record Payment
     await Payment.create({
       order: order._id,
       transactionId: razorpayPaymentId,
@@ -124,14 +148,19 @@ export const confirmPayPalPayment = async (req, res, next) => {
   const { orderId, paypalOrderId } = req.body;
 
   try {
-    const capture = await paypalService.captureOrder(paypalOrderId);
-    if (capture.status !== 'COMPLETED') {
-      return res.status(400).json({ success: false, message: `PayPal order not completed. Status: ${capture.status}` });
-    }
-
     const order = await Order.findById(orderId);
     if (!order) {
       return res.status(404).json({ success: false, message: 'Order not found' });
+    }
+
+    if (!authorizeOrderAccess(order, req.user, res)) return;
+
+    const capture = await paypalService.captureOrder(paypalOrderId);
+    if (capture.status !== 'COMPLETED') {
+      return res.status(400).json({
+        success: false,
+        message: `PayPal order not completed. Status: ${capture.status}`
+      });
     }
 
     order.isPaid = true;
@@ -146,19 +175,16 @@ export const confirmPayPalPayment = async (req, res, next) => {
 
     await order.save();
 
-    // Deduct stock levels
-      // Deduct stock levels only if not already deducted at order creation
-      if (!order.inventoryDeducted) {
-        for (const item of order.orderItems) {
-          await Product.findByIdAndUpdate(item.product, {
-            $inc: { inventory: -item.quantity }
-          });
-        }
-        order.inventoryDeducted = true;
-        await order.save();
+    if (!order.inventoryDeducted) {
+      for (const item of order.orderItems) {
+        await Product.findByIdAndUpdate(item.product, {
+          $inc: { inventory: -item.quantity }
+        });
       }
+      order.inventoryDeducted = true;
+      await order.save();
+    }
 
-    // Record Payment
     await Payment.create({
       order: order._id,
       transactionId: capture.id,
@@ -180,13 +206,11 @@ export const stripeWebhook = async (req, res, next) => {
   let event;
 
   try {
-    // Note: Stripe webhook needs the raw body to verify signature. We will handle that in app.js setup.
     event = stripeService.verifyWebhookSignature(req.body, sig);
   } catch (err) {
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
 
-  // Handle the event
   if (event.type === 'payment_intent.succeeded') {
     const paymentIntent = event.data.object;
     const orderId = paymentIntent.metadata.orderId;
@@ -205,23 +229,20 @@ export const stripeWebhook = async (req, res, next) => {
 
         await order.save();
 
-        // Deduct stock levels
-          // Deduct stock levels only if not already deducted at order creation
-          if (!order.inventoryDeducted) {
-            for (const item of order.orderItems) {
-              await Product.findByIdAndUpdate(item.product, {
-                $inc: { inventory: -item.quantity }
-              });
-            }
-            order.inventoryDeducted = true;
-            await order.save();
+        if (!order.inventoryDeducted) {
+          for (const item of order.orderItems) {
+            await Product.findByIdAndUpdate(item.product, {
+              $inc: { inventory: -item.quantity }
+            });
           }
+          order.inventoryDeducted = true;
+          await order.save();
+        }
 
-        // Record payment
         await Payment.create({
           order: order._id,
           transactionId: paymentIntent.id,
-          amount: paymentIntent.amount / 100, // Cents to Dollars
+          amount: paymentIntent.amount / 100,
           currency: paymentIntent.currency.toUpperCase(),
           gateway: 'Stripe',
           status: 'succeeded',

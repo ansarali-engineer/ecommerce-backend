@@ -2,56 +2,60 @@ import Order from '../models/Order.js';
 import Product from '../models/Product.js';
 import Cart from '../models/Cart.js';
 import { generateInvoicePDF } from '../utils/invoiceGenerator.js';
+import { calculateOrderPricing } from '../utils/orderPricing.js';
+import { isOrderOwnerOrAdmin } from '../utils/authHelpers.js';
 
 // Create new order
 export const createOrder = async (req, res, next) => {
-  const { orderItems, shippingAddress, paymentMethod, taxPrice, shippingPrice, discountPrice, totalPrice } = req.body;
+  const {
+    orderItems,
+    shippingAddress,
+    billingAddress,
+    paymentMethod,
+    taxPrice,
+    shippingPrice,
+    couponCode,
+    customerNotes
+  } = req.body;
 
   try {
-    // 1. Verify and lock inventory stock first
-    for (const item of orderItems) {
-      const product = await Product.findById(item.product);
-      if (!product) {
-        return res.status(404).json({ success: false, message: `Product ${item.title} not found` });
-      }
-      if (product.inventory < item.quantity) {
-        return res.status(400).json({
-          success: false,
-          message: `Insufficient inventory for ${product.title}. Only ${product.inventory} items left.`
-        });
-      }
-    }
-
-    // 2. Create the Order
-    const order = await Order.create({
-      user: req.user._id,
+    const pricing = await calculateOrderPricing({
       orderItems,
-      shippingAddress,
-      paymentMethod,
+      couponCode,
       taxPrice,
-      shippingPrice,
-      discountPrice,
-      totalPrice
+      shippingPrice
     });
 
-    // 3. Deduct stock immediately (reserve) for all orders to avoid overselling.
-    //    We track `inventoryDeducted` on the order so payment handlers don't double-deduct,
-    //    and cancellations will restore stock if necessary.
-    for (const item of orderItems) {
+    const order = await Order.create({
+      user: req.user._id,
+      orderItems: pricing.verifiedItems,
+      shippingAddress,
+      billingAddress,
+      paymentMethod,
+      subtotal: pricing.subtotal,
+      taxPrice: pricing.taxPrice,
+      shippingPrice: pricing.shippingPrice,
+      discountPrice: pricing.discountPrice,
+      totalPrice: pricing.totalPrice,
+      coupon: pricing.appliedCoupon?._id,
+      customerNotes
+    });
+
+    if (pricing.appliedCoupon) {
+      pricing.appliedCoupon.usedCount += 1;
+      await pricing.appliedCoupon.save();
+    }
+
+    for (const item of pricing.verifiedItems) {
       await Product.findByIdAndUpdate(item.product, {
         $inc: { inventory: -item.quantity }
       });
     }
+
     order.inventoryDeducted = true;
-    // Set initial status
-    if (paymentMethod === 'CashOnDelivery') {
-      order.orderStatus = 'Processing';
-    } else {
-      order.orderStatus = 'Awaiting Payment';
-    }
+    order.orderStatus = paymentMethod === 'CashOnDelivery' ? 'Processing' : 'Awaiting Payment';
     await order.save();
 
-    // Clear user's cart
     await Cart.findOneAndUpdate({ user: req.user._id }, { $set: { items: [] } });
 
     res.status(201).json({
@@ -60,6 +64,9 @@ export const createOrder = async (req, res, next) => {
       order
     });
   } catch (error) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({ success: false, message: error.message });
+    }
     next(error);
   }
 };
@@ -75,8 +82,7 @@ export const getOrderById = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
 
-    // Security check: Only the customer who ordered or an admin can view it
-    if (order.user._id.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+    if (!isOrderOwnerOrAdmin(order, req.user)) {
       return res.status(403).json({ success: false, message: 'Not authorized to view this order' });
     }
 
@@ -124,12 +130,11 @@ export const cancelOrder = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
 
-    if (order.user.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+    if (!isOrderOwnerOrAdmin(order, req.user)) {
       return res.status(403).json({ success: false, message: 'Not authorized to cancel this order' });
     }
 
-    // Eligible for cancellation: only if status is 'Pending' or 'Paid' (before shipped/delivered/processing)
-    const eligibleStatuses = ['Pending', 'Paid'];
+    const eligibleStatuses = ['Pending', 'Paid', 'Awaiting Payment', 'Processing'];
     if (!eligibleStatuses.includes(order.orderStatus)) {
       return res.status(400).json({
         success: false,
@@ -137,7 +142,6 @@ export const cancelOrder = async (req, res, next) => {
       });
     }
 
-    // Refund stock if stock was already deducted (tracked by inventoryDeducted flag)
     if (order.inventoryDeducted) {
       for (const item of order.orderItems) {
         await Product.findByIdAndUpdate(item.product, {
@@ -171,8 +175,7 @@ export const downloadInvoice = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'Order not found' });
     }
 
-    // Security check
-    if (order.user._id.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+    if (!isOrderOwnerOrAdmin(order, req.user)) {
       return res.status(403).json({ success: false, message: 'Not authorized to access this invoice' });
     }
 

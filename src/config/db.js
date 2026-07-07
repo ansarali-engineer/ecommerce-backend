@@ -8,12 +8,20 @@ if (!cached) {
 }
 
 const connectDB = async () => {
+  if (mongoose.connection.readyState === 1) {
+    return mongoose.connection;
+  }
+
   // Return existing connection if available
   if (cached.conn) {
     return cached.conn;
   }
 
   if (!cached.promise) {
+    const mongoUri = process.env.NODE_ENV === 'test'
+      ? (process.env.MONGO_URI_TEST || process.env.MONGO_URI)
+      : process.env.MONGO_URI;
+
     const opts = {
       bufferCommands: false,      // Don't buffer commands if disconnected
       maxPoolSize: 10,            // Limit connections per function instance
@@ -22,7 +30,7 @@ const connectDB = async () => {
     };
 
     cached.promise = mongoose
-      .connect(process.env.MONGO_URI, opts)
+      .connect(mongoUri, opts)
       .then((mongoose) => {
         console.log(`[Database] MongoDB Connected: ${mongoose.connection.host}`);
         return mongoose;

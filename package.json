@@ -9,11 +9,12 @@
     "dev": "nodemon src/server.js",
     "dev:clean": "node scripts/kill-port.js 5000 && nodemon src/server.js",
     "kill-port": "node scripts/kill-port.js",
-    "test": "jest --runInBand --detectOpenHandles --coverage",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand --detectOpenHandles --coverage",
     "test:watch": "jest --watch",
     "test:integration": "jest --testPathPattern=integration --runInBand",
     "lint": "eslint src/",
-    "seed": "node src/scripts/seed.js"
+    "seed": "node src/scripts/seed.js",
+    "create-admin": "node src/scripts/create-admin.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

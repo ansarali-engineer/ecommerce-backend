@@ -3,20 +3,11 @@ import app from '../app.js';
 import Product from '../models/Product.js';
 import Category from '../models/Category.js';
 import User from '../models/User.js';
-import mongoose from 'mongoose';
 
 describe('Product Endpoints', () => {
   let adminToken;
   let testCategory;
   let testProduct;
-
-  beforeAll(async () => {
-    await mongoose.connect(process.env.MONGO_URI_TEST || 'mongodb://localhost:27017/ecommerce_test');
-  });
-
-  afterAll(async () => {
-    await mongoose.connection.close();
-  });
 
   beforeEach(async () => {
     await Product.deleteMany({});
@@ -50,7 +41,7 @@ describe('Product Endpoints', () => {
       price: 99.99,
       category: testCategory._id,
       inventory: 100,
-      images: ['https://example.com/image.jpg'],
+      images: [{ url: 'https://example.com/image.jpg', isPrimary: true }],
       status: 'active'
     });
   });
@@ -94,7 +85,7 @@ describe('Product Endpoints', () => {
           price: 10 + i,
           category: testCategory._id,
           inventory: 10,
-          images: ['https://example.com/image.jpg'],
+          images: [{ url: 'https://example.com/image.jpg', isPrimary: true }],
           status: 'active'
         });
       }

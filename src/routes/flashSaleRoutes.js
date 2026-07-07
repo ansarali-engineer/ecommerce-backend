@@ -41,6 +41,36 @@ router.get('/upcoming', async (req, res, next) => {
   }
 });
 
+// Admin: get all flash sales — must be before /:id
+router.get('/admin/all', protect, admin, async (req, res, next) => {
+  try {
+    const { status, page = 1, limit = 20 } = req.query;
+
+    const query = {};
+    if (status) query.status = status;
+
+    const flashSales = await FlashSale.find(query)
+      .populate('products.product', 'title')
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(parseInt(limit));
+
+    const total = await FlashSale.countDocuments(query);
+
+    res.json({
+      success: true,
+      flashSales,
+      pagination: {
+        page: parseInt(page),
+        pages: Math.ceil(total / limit),
+        total
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Get flash sale by ID
 router.get('/:id', async (req, res, next) => {
   try {
@@ -116,36 +146,6 @@ router.delete('/:id', async (req, res, next) => {
     }
 
     res.json({ success: true, message: 'Flash sale deleted' });
-  } catch (error) {
-    next(error);
-  }
-});
-
-// Get all flash sales (admin)
-router.get('/admin/all', async (req, res, next) => {
-  try {
-    const { status, page = 1, limit = 20 } = req.query;
-    
-    const query = {};
-    if (status) query.status = status;
-
-    const flashSales = await FlashSale.find(query)
-      .populate('products.product', 'title')
-      .sort({ createdAt: -1 })
-      .skip((page - 1) * limit)
-      .limit(parseInt(limit));
-
-    const total = await FlashSale.countDocuments(query);
-
-    res.json({
-      success: true,
-      flashSales,
-      pagination: {
-        page: parseInt(page),
-        pages: Math.ceil(total / limit),
-        total
-      }
-    });
   } catch (error) {
     next(error);
   }

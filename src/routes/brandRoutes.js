@@ -18,12 +18,24 @@ router.get('/', async (req, res, next) => {
   }
 });
 
+// Admin: get all brands (including inactive) — must be before /:slug
+router.get('/admin/all', protect, admin, async (req, res, next) => {
+  try {
+    const brands = await Brand.find()
+      .sort({ name: 1 });
+
+    res.json({ success: true, brands });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Get brand by slug
 router.get('/:slug', async (req, res, next) => {
   try {
-    const brand = await Brand.findOne({ 
-      slug: req.params.slug, 
-      isActive: true 
+    const brand = await Brand.findOne({
+      slug: req.params.slug,
+      isActive: true
     });
 
     if (!brand) {
@@ -111,18 +123,6 @@ router.delete('/:id', async (req, res, next) => {
     }
 
     res.json({ success: true, message: 'Brand deleted successfully' });
-  } catch (error) {
-    next(error);
-  }
-});
-
-// Get all brands (admin - including inactive)
-router.get('/admin/all', async (req, res, next) => {
-  try {
-    const brands = await Brand.find()
-      .sort({ name: 1 });
-
-    res.json({ success: true, brands });
   } catch (error) {
     next(error);
   }

@@ -1,21 +1,9 @@
 import request from 'supertest';
 import app from '../app.js';
 import User from '../models/User.js';
-import mongoose from 'mongoose';
 
 describe('Authentication Endpoints', () => {
-  beforeAll(async () => {
-    // Connect to test database
-    await mongoose.connect(process.env.MONGO_URI_TEST || 'mongodb://localhost:27017/ecommerce_test');
-  });
-
-  afterAll(async () => {
-    // Disconnect from database
-    await mongoose.connection.close();
-  });
-
   beforeEach(async () => {
-    // Clear users before each test
     await User.deleteMany({});
   });
 

@@ -18,10 +18,10 @@ router.route('/')
   .post(validateBody(orderSchema), createOrder)
   .get(getMyOrders);
 
+router.get('/:id/invoice', downloadInvoice);
+
 router.route('/:id')
   .get(getOrderById)
-  .put(cancelOrder); // Put request to cancel order (modifies status)
-
-router.get('/:id/invoice', downloadInvoice);
+  .put(cancelOrder);
 
 export default router;
